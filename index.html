@@ -22,7 +22,7 @@
   .top { -webkit-align-items: flex-start; align-items: flex-start; }
   .clock { font-weight: 100; font-size: 150px; line-height: 0.9; letter-spacing: -4px; white-space: nowrap; }
   .clock .sec { font-size: 46px; letter-spacing: 0; color: #8a8f98; margin-left: 6px; }
-  .clock .ampm { font-size: 40px; letter-spacing: 0; font-weight: 300; margin-left: 4px; color: #d9b26f; }
+  .clock .ampm { font-size: 44px; letter-spacing: 0; font-weight: 300; margin-left: 14px; color: #d9b26f; }
   .date { font-size: 30px; font-weight: 300; margin-top: 14px; }
   .hijri { font-size: 22px; margin-top: 6px; color: #8a8f98; }
   .hijri .ar { margin-left: 14px; color: #d9b26f; }
@@ -51,12 +51,14 @@
   .bottom { margin-top: 22px; -webkit-flex: 1; flex: 1; min-height: 0; -webkit-align-items: stretch; align-items: stretch; }
   .panel-title { font-size: 14px; letter-spacing: 2px; text-transform: uppercase; color: #8a8f98; margin-bottom: 10px; }
   .countdown { margin-right: 28px; }
-  .cd-name { font-size: 40px; font-weight: 300; }
-  .cd-name .ar { font-size: 36px; color: #d9b26f; margin-left: 14px; }
-  .cd-in { font-size: 84px; font-weight: 100; line-height: 1.05; margin-top: 4px; white-space: nowrap; }
+  .cd-name { font-size: 34px; font-weight: 300; white-space: nowrap; }
+  .cd-name .ar { font-size: 30px; color: #d9b26f; margin-left: 12px; }
+  .cd-in { font-size: 66px; font-weight: 100; line-height: 1.1; margin-top: 4px; white-space: nowrap; }
+  .prev .cd-name .ar { color: #8a8f98; }
+  .prev .cd-in { color: #a9adb4; }
   .cd-at { font-size: 22px; font-weight: 300; color: #8a8f98; }
 
-  .fc { width: 320px; }
+  .fc { width: 290px; }
   .day { display: -webkit-flex; display: flex; -webkit-align-items: center; align-items: center; font-size: 21px; padding: 6px 0; border-bottom: 1px solid #1a212a; }
   .day .lbl { width: 76px; font-weight: 300; }
   .day .ic { width: 44px; font-size: 24px; }
@@ -84,9 +86,10 @@
     .weather { text-align: left; margin-top: 24px; }
     .p .t { font-size: 26px; }
     .p .en { font-size: 16px; }
-    .bottom { -webkit-flex-direction: column; flex-direction: column; }
-    .countdown { margin-right: 0; margin-bottom: 24px; }
-    .fc { width: auto; }
+    .bottom { -webkit-flex-wrap: wrap; flex-wrap: wrap; -webkit-align-content: flex-start; align-content: flex-start; }
+    .countdown { -webkit-flex: 0 0 50%; flex: 0 0 50%; margin-right: 0; margin-bottom: 22px; }
+    .fc { width: 100%; }
+    .cd-in { font-size: 58px; }
   }
 </style>
 </head>
@@ -107,6 +110,12 @@
       <div class="cd-name" id="cdName">&nbsp;</div>
       <div class="cd-in" id="cdIn">&nbsp;</div>
       <div class="cd-at" id="cdAt">&nbsp;</div>
+    </div>
+    <div class="grow countdown prev">
+      <div class="panel-title">Previous prayer</div>
+      <div class="cd-name" id="pvName">&nbsp;</div>
+      <div class="cd-in" id="pvAgo">&nbsp;</div>
+      <div class="cd-at" id="pvAt">&nbsp;</div>
     </div>
     <div class="fc">
       <div class="panel-title">Forecast</div>
@@ -144,6 +153,8 @@ var SETTINGS = {
   clock24h: false,
   fahrenheit: true,
   nightDim: { start: "23:00", end: "05:30" },   // set to null to turn off
+
+  // Weather location/units are set in .github/workflows/weather.yml (LAT, LON, UNIT).
 
   // Adhan per prayer. A list alternates between recordings day to day.
   adhan: {
@@ -239,7 +250,7 @@ var HIJRI_TABLE = [[1447,1,2025,6,26],[1447,2,2025,7,26],[1447,3,2025,8,24],[144
   function dayIndex(y, m, d) { return Math.floor(Date.UTC(y, m - 1, d) / 86400000); }
 
   // ---------------------------------------------------------------- prayer schedule
-  var TODAY = null, PRAYERS = [], TOMORROW_FAJR = null, HIJRI = null;
+  var TODAY = null, PRAYERS = [], TOMORROW_FAJR = null, YESTERDAY_ISHA = null, HIJRI = null;
 
   function prayersFor(date) {
     var S = SETTINGS;
@@ -272,6 +283,8 @@ var HIJRI_TABLE = [[1447,1,2025,6,26],[1447,2,2025,7,26],[1447,3,2025,8,24],[144
     PRAYERS = prayersFor(now);
     var tm = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 12);
     TOMORROW_FAJR = prayersFor(tm)[0];
+    var yd = prayersFor(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 12));
+    YESTERDAY_ISHA = yd[yd.length - 1];
     HIJRI = hijriFor(now);
     $("hijri").innerHTML = HIJRI ? esc(HIJRI.en) + '<span class="ar">' + esc(HIJRI.ar) + "</span>" : "&nbsp;";
     shownNext = null;
@@ -280,6 +293,12 @@ var HIJRI_TABLE = [[1447,1,2025,6,26],[1447,2,2025,7,26],[1447,3,2025,8,24],[144
   function nextPrayer(ms) {
     for (var i = 0; i < PRAYERS.length; i++) if (PRAYERS[i].key !== "sunrise" && PRAYERS[i].ts > ms) return PRAYERS[i];
     return TOMORROW_FAJR;
+  }
+
+  function prevPrayer(ms) {
+    var last = YESTERDAY_ISHA;
+    for (var i = 0; i < PRAYERS.length; i++) if (PRAYERS[i].key !== "sunrise" && PRAYERS[i].ts <= ms) last = PRAYERS[i];
+    return last;
   }
 
   var shownNext = null;
@@ -295,12 +314,18 @@ var HIJRI_TABLE = [[1447,1,2025,6,26],[1447,2,2025,7,26],[1447,3,2025,8,24],[144
     $("prayers").innerHTML = html;
     $("cdName").innerHTML = esc(nxt === TOMORROW_FAJR ? "Fajr" : nxt.name) + '<span class="ar">' + esc(nxt.arabic) + "</span>";
     $("cdAt").innerHTML = (nxt === TOMORROW_FAJR ? "Tomorrow at " : "at ") + fmtTime(nxt.ts);
+    var pv = prevPrayer(ms);
+    $("pvName").innerHTML = esc(pv.name) + '<span class="ar">' + esc(pv.arabic) + "</span>";
+    $("pvAt").innerHTML = "ago · " + (pv === YESTERDAY_ISHA ? "yesterday at " : "at ") + fmtTime(pv.ts);
   }
 
-  function renderCountdown(ms) {
-    var nxt = nextPrayer(ms), s = Math.max(0, Math.floor((nxt.ts - ms) / 1000));
+  function hms(s) {
     var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
-    $("cdIn").innerHTML = (h ? h + ":" + pad(m) : m) + ":" + pad(sec);
+    return (h ? h + ":" + pad(m) : m) + ":" + pad(sec);
+  }
+  function renderCountdown(ms) {
+    $("cdIn").innerHTML = hms(Math.max(0, Math.floor((nextPrayer(ms).ts - ms) / 1000)));
+    $("pvAgo").innerHTML = hms(Math.max(0, Math.floor((ms - prevPrayer(ms).ts) / 1000)));
   }
 
   // ---------------------------------------------------------------- clock loop
@@ -310,9 +335,8 @@ var HIJRI_TABLE = [[1447,1,2025,6,26],[1447,2,2025,7,26],[1447,3,2025,8,24],[144
     if (dayKey(now) !== TODAY) newDay(now);
 
     var h = now.getHours(), html;
-    if (SETTINGS.clock24h) html = pad(h) + ":" + pad(now.getMinutes()) + '<span class="sec">' + pad(now.getSeconds()) + "</span>";
-    else html = (h % 12 || 12) + ":" + pad(now.getMinutes()) + '<span class="sec">' + pad(now.getSeconds()) +
-                '</span><span class="ampm">' + (h >= 12 ? "PM" : "AM") + "</span>";
+    if (SETTINGS.clock24h) html = pad(h) + ":" + pad(now.getMinutes());
+    else html = (h % 12 || 12) + ":" + pad(now.getMinutes()) + '<span class="ampm">' + (h >= 12 ? "PM" : "AM") + "</span>";
     $("clock").innerHTML = html;
     $("date").innerHTML = DAYS[now.getDay()] + ", " + MONTHS[now.getMonth()] + " " + now.getDate() + ", " + now.getFullYear();
 
@@ -393,7 +417,7 @@ var HIJRI_TABLE = [[1447,1,2025,6,26],[1447,2,2025,7,26],[1447,3,2025,8,24],[144
   document.addEventListener("click", function (e) { if (!("ontouchend" in document)) onTap(e); }, false);
 
   // ---------------------------------------------------------------- weather
-  var WEATHER_OK = 0, WEATHER_TRY = 0;
+  var WEATHER_OK = 0, WEATHER_TRY = 0, WEATHER_AGE = 0;
   var CODES = { 0: ["Clear", "☀️"], 1: ["Mostly clear", "🌤"], 2: ["Partly cloudy", "⛅️"], 3: ["Cloudy", "☁️"],
     45: ["Fog", "🌫"], 48: ["Fog", "🌫"], 51: ["Light drizzle", "🌦"], 53: ["Drizzle", "🌦"], 55: ["Drizzle", "🌧"],
     56: ["Freezing drizzle", "🌧"], 57: ["Freezing drizzle", "🌧"], 61: ["Light rain", "🌦"], 63: ["Rain", "🌧"],
@@ -411,19 +435,8 @@ var HIJRI_TABLE = [[1447,1,2025,6,26],[1447,2,2025,7,26],[1447,3,2025,8,24],[144
       if (x.status === 200) { try { ok(JSON.parse(x.responseText)); return; } catch (e) {} }
       fail();
     };
-    x.ontimeout = function () {};
+    x.ontimeout = function () { fail(); };
     x.send();
-  }
-
-  function iconFor(text) {
-    var t = text.toLowerCase();
-    if (t.indexOf("thunder") >= 0) return "⛈";
-    if (t.indexOf("snow") >= 0) return "🌨";
-    if (t.indexOf("rain") >= 0 || t.indexOf("shower") >= 0 || t.indexOf("drizzle") >= 0) return "🌧";
-    if (t.indexOf("fog") >= 0) return "🌫";
-    if (t.indexOf("partly") >= 0 || t.indexOf("mostly sunny") >= 0) return "⛅️";
-    if (t.indexOf("cloud") >= 0 || t.indexOf("overcast") >= 0) return "☁️";
-    return "☀️";
   }
 
   function showWeather(w) {
@@ -442,67 +455,34 @@ var HIJRI_TABLE = [[1447,1,2025,6,26],[1447,2,2025,7,26],[1447,3,2025,8,24],[144
     $("forecast").innerHTML = html;
   }
 
-  // Source 1: Open-Meteo
-  function weatherOpenMeteo(fail) {
-    var S = SETTINGS;
-    getJSON("https://api.open-meteo.com/v1/forecast?latitude=" + S.latitude + "&longitude=" + S.longitude +
-      "&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m" +
-      "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max" +
-      "&temperature_unit=" + (S.fahrenheit ? "fahrenheit" : "celsius") + "&wind_speed_unit=" + (S.fahrenheit ? "mph" : "kmh") +
-      "&timezone=auto&forecast_days=4",
-      function (d) {
-        var c = d.current, k = CODES[c.weather_code] || ["—", "🌡"], daily = [];
-        for (var i = 0; i < d.daily.time.length; i++) {
-          var p = d.daily.time[i].split("-"), dt = new Date(+p[0], +p[1] - 1, +p[2]);
-          var dk = CODES[d.daily.weather_code[i]] || ["", "🌡"];
-          daily.push({ label: i === 0 ? "Today" : DAYS[dt.getDay()].substr(0, 3), icon: dk[1],
-                       hi: Math.round(d.daily.temperature_2m_max[i]), lo: Math.round(d.daily.temperature_2m_min[i]),
-                       rain: d.daily.precipitation_probability_max[i] });
-        }
-        showWeather({ temp: Math.round(c.temperature_2m), text: k[0], icon: k[1], daily: daily,
-          meta: "Feels " + Math.round(c.apparent_temperature) + "° · " + c.relative_humidity_2m + "% · " +
-                Math.round(c.wind_speed_10m) + (S.fahrenheit ? " mph" : " km/h") });
-      }, fail);
-  }
-
-  // Source 2 (backup, US only): National Weather Service
-  var NWS = null;
-  function weatherNWS(fail) {
-    function go() {
-      getJSON(NWS.hourly, function (h) {
-        var now = h.properties.periods[0];
-        getJSON(NWS.daily, function (f) {
-          var per = f.properties.periods, daily = [];
-          for (var i = 0; i < per.length && daily.length < 4; i++) {
-            if (!per[i].isDaytime && daily.length) continue;
-            var lo = null;
-            for (var j = i + 1; j < per.length; j++) if (!per[j].isDaytime) { lo = per[j].temperature; break; }
-            daily.push({ label: daily.length === 0 ? "Today" : per[i].name.substr(0, 3), icon: iconFor(per[i].shortForecast),
-                         hi: per[i].temperature, lo: per[i].isDaytime ? lo : null,
-                         rain: per[i].probabilityOfPrecipitation ? per[i].probabilityOfPrecipitation.value : null });
-          }
-          showWeather({ temp: now.temperature, text: now.shortForecast, icon: iconFor(now.shortForecast), daily: daily,
-                        meta: now.windSpeed ? "Wind " + now.windSpeed : "" });
-        }, fail);
-      }, fail);
-    }
-    if (NWS) return go();
-    getJSON("https://api.weather.gov/points/" + SETTINGS.latitude.toFixed(4) + "," + SETTINGS.longitude.toFixed(4), function (p) {
-      NWS = { hourly: p.properties.forecastHourly, daily: p.properties.forecast };
-      go();
-    }, fail);
-  }
-
+  // Weather comes from weather.json on this same site. A GitHub Action refreshes it every
+  // 30 minutes, so the iPad never has to connect to a weather service itself (iOS 9 can't).
   function refreshWeather() {
     WEATHER_TRY = new Date().getTime();
-    weatherOpenMeteo(function () { weatherNWS(function () {}); });
+    getJSON("weather.json?_=" + WEATHER_TRY, function (d) {
+      if (!d || !d.current || !d.daily) return;
+      var S = SETTINGS, c = d.current, k = CODES[c.weather_code] || ["—", "🌡"], daily = [];
+      var today = new Date(), todayKey = today.getFullYear() + "-" + pad(today.getMonth() + 1) + "-" + pad(today.getDate());
+      for (var i = 0; i < d.daily.time.length && daily.length < 4; i++) {
+        if (d.daily.time[i] < todayKey) continue;   // skip days already past if the file is a bit old
+        var p = d.daily.time[i].split("-"), dt = new Date(+p[0], +p[1] - 1, +p[2]);
+        var dk = CODES[d.daily.weather_code[i]] || ["", "🌡"];
+        daily.push({ label: d.daily.time[i] === todayKey ? "Today" : DAYS[dt.getDay()].substr(0, 3), icon: dk[1],
+                     hi: Math.round(d.daily.temperature_2m_max[i]), lo: Math.round(d.daily.temperature_2m_min[i]),
+                     rain: d.daily.precipitation_probability_max[i] });
+      }
+      showWeather({ temp: Math.round(c.temperature_2m), text: k[0], icon: k[1], daily: daily,
+        meta: "Feels " + Math.round(c.apparent_temperature) + "° · " + c.relative_humidity_2m + "% · " +
+              Math.round(c.wind_speed_10m) + (S.fahrenheit ? " mph" : " km/h") });
+      WEATHER_AGE = d.fetched_at ? new Date().getTime() - d.fetched_at * 1000 : 0;
+    }, function () {});
   }
 
   // ---------------------------------------------------------------- status
   function renderStatus() {
     var el = $("status"), age = new Date().getTime() - WEATHER_OK;
     var sound = unlocked ? "🔊 Adhan on" : "🔇 Adhan off — tap screen";
-    if (WEATHER_OK && age > 90 * 60000) { el.className = "status bad"; el.innerHTML = sound + " · weather not updating"; }
+    if (WEATHER_OK && (age > 90 * 60000 || WEATHER_AGE > 3 * 3600000)) { el.className = "status bad"; el.innerHTML = sound + " · weather not updating"; }
     else if (!WEATHER_OK && new Date().getTime() - WEATHER_TRY > 60000) { el.className = "status bad"; el.innerHTML = sound + " · weather unavailable"; }
     else { el.className = unlocked ? "status" : "status bad"; el.innerHTML = sound; }
   }
