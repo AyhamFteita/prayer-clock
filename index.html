@@ -69,6 +69,7 @@
 
   .status { position: absolute; right: 14px; bottom: 8px; font-size: 13px; color: #4a4f57; }
   .status.bad { color: #c46a5a; }
+  #playing.err { background: #c46a5a; color: #fff; }
   #test { position: absolute; left: 14px; bottom: 6px; padding: 10px 16px; font-size: 15px; color: #8a8f98;
           border: 1px solid #2a323d; border-radius: 18px; z-index: 6; }
   #dim { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: #000; opacity: 0; pointer-events: none;
@@ -401,6 +402,7 @@ var HIJRI_TABLE = [[1447,1,2025,6,26],[1447,2,2025,7,26],[1447,3,2025,8,24],[144
     x.responseType = "arraybuffer";
     x.timeout = 60000;
     function finish(buf) {
+      if (!buf && LAST_ERR) setStatusNote(LAST_ERR);
       cache.loading = null;
       if (buf) cache.buffer = buf; else cache.file = null;
       var w = cache.waiters; cache.waiters = [];
@@ -408,36 +410,55 @@ var HIJRI_TABLE = [[1447,1,2025,6,26],[1447,2,2025,7,26],[1447,3,2025,8,24],[144
     }
     x.onreadystatechange = function () {
       if (x.readyState !== 4) return;
-      if (x.status !== 200 || !x.response) { setStatusNote("adhan download failed"); return finish(null); }
+      if (x.status !== 200 || !x.response) {
+        LAST_ERR = "Download failed (" + (x.status || "no connection") + ") for " + file; return finish(null);
+      }
+      if (playing) $("playing").innerHTML = "Preparing adhan… (" + Math.round(x.response.byteLength / 1024) + " KB downloaded)";
       try {
         quiet(ctx.decodeAudioData(x.response, function (buf) { finish(buf); },
-                                  function () { setStatusNote("adhan file can't be decoded"); finish(null); }));
-      } catch (e) { setStatusNote("adhan decode error"); finish(null); }
+                                  function (err) { LAST_ERR = "iPad couldn't decode " + file; finish(null); }));
+      } catch (e) { LAST_ERR = "Decode error: " + e.message; finish(null); }
     };
-    x.ontimeout = function () { setStatusNote("adhan download timed out"); finish(null); };
+    x.ontimeout = function () { LAST_ERR = "Download timed out for " + file; finish(null); };
     x.send();
   }
 
   // Called a couple of minutes early so the file is ready the second the prayer comes in.
   function preloadAdhan(key) { if (ctx && unlocked) loadBuffer(adhanFile(key), function () {}); }
 
+  var LAST_ERR = "", errTimer = null;
   function showPlaying(on, label) {
     playing = on;
+    if (errTimer && on) { clearTimeout(errTimer); errTimer = null; }
+    $("playing").className = "";
     $("playing").innerHTML = (label || "Adhan playing") + " — tap anywhere to stop";
-    $("playing").style.display = on ? "block" : "none";
+    if (!errTimer) $("playing").style.display = on ? "block" : "none";
+  }
+  // Failure stays on screen (red) for 30 seconds so it can be read.
+  function showError(msg) {
+    playing = false;
+    $("playing").className = "err";
+    $("playing").innerHTML = "⚠️ " + esc(msg);
+    $("playing").style.display = "block";
+    if (errTimer) clearTimeout(errTimer);
+    errTimer = setTimeout(function () { errTimer = null; $("playing").style.display = "none"; }, 30000);
   }
 
   function playAdhan(key, label) {
     var f = adhanFile(key);
     if (!f || !unlocked) return;
     stopAdhan();
+    LAST_ERR = "";
     showPlaying(true, label);
+    $("playing").innerHTML = "Preparing adhan…";
     if (ctx) {
       if (ctx.resume && ctx.state && ctx.state !== "running") quiet(ctx.resume());
       var started = new Date().getTime();
       loadBuffer(f, function (buf) {
         if (!playing) return;                                   // stopped while loading
-        if (!buf || new Date().getTime() - started > 180000) return showPlaying(false);
+        if (new Date().getTime() - started > 180000) return showPlaying(false);
+        if (!buf) return playWithAudioTag(f, label, LAST_ERR || "Web Audio failed");
+        $("playing").innerHTML = (label || "Adhan playing") + " — tap anywhere to stop";
         source = ctx.createBufferSource();
         source.buffer = buf;
         source.connect(ctx.destination);
@@ -446,16 +467,35 @@ var HIJRI_TABLE = [[1447,1,2025,6,26],[1447,2,2025,7,26],[1447,3,2025,8,24],[144
       });
       return;
     }
-    try { player.src = f; player.load(); quiet(player.play()); } catch (e) { showPlaying(false); }
+    playWithAudioTag(f, label, "");
   }
 
+  // Fallback: Safari's own audio player.
+  function playWithAudioTag(f, label, why) {
+    AUDIO_WHY = why;
+    showPlaying(true, label);
+    try {
+      player.src = f; player.load();
+      quiet(player.play());
+      setTimeout(function () {
+        if (playing && player.paused) showError((AUDIO_WHY ? AUDIO_WHY + " · " : "") + "audio player didn't start");
+      }, 6000);
+    } catch (e) { showError((why ? why + " · " : "") + "audio player error: " + e.message); }
+  }
+  var AUDIO_WHY = "";
+
   function stopAdhan() {
+    if (errTimer) { clearTimeout(errTimer); errTimer = null; }
     if (source) { var s = source; source = null; stopNode(s); }
     try { player.pause(); } catch (e) {}
     showPlaying(false);
   }
   player.addEventListener("ended", function () { showPlaying(false); });
-  player.addEventListener("error", function () { setStatusNote("adhan file can't play"); showPlaying(false); });
+  player.addEventListener("error", function () {
+    if (!playing) return;
+    var code = player.error ? player.error.code : "?";
+    showError((AUDIO_WHY ? AUDIO_WHY + " · " : "") + "audio player error " + code);
+  });
 
   // iOS only allows sound after a tap. The first tap creates the audio engine and plays
   // a tiny silent sound, which keeps sound allowed for as long as the page stays open.
@@ -478,7 +518,7 @@ var HIJRI_TABLE = [[1447,1,2025,6,26],[1447,2,2025,7,26],[1447,3,2025,8,24],[144
   function onTap(e) {
     if (!unlocked) { unlockAudio(); if (e && e.preventDefault) e.preventDefault(); return; }
     if (ctx && ctx.resume && ctx.state && ctx.state !== "running") quiet(ctx.resume());  // re-arm if iOS paused it
-    if (playing) stopAdhan();
+    if (playing || errTimer) stopAdhan();
   }
   document.addEventListener("touchend", onTap, false);
   document.addEventListener("click", function (e) { if (!("ontouchend" in document)) onTap(e); }, false);
@@ -489,6 +529,7 @@ var HIJRI_TABLE = [[1447,1,2025,6,26],[1447,2,2025,7,26],[1447,3,2025,8,24],[144
     if (e.preventDefault) e.preventDefault();
     if (!unlocked) unlockAudio();
     if (playing) return stopAdhan();
+    if (ctx && ctx.resume) quiet(ctx.resume());
     playAdhan(nextPrayer(new Date().getTime()).key, "Test adhan playing");
   }
   $("test").addEventListener("touchend", onTest, false);
