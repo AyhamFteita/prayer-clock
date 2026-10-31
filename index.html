@@ -69,6 +69,8 @@
 
   .status { position: absolute; right: 14px; bottom: 8px; font-size: 13px; color: #4a4f57; }
   .status.bad { color: #c46a5a; }
+  #test { position: absolute; left: 14px; bottom: 6px; padding: 10px 16px; font-size: 15px; color: #8a8f98;
+          border: 1px solid #2a323d; border-radius: 18px; z-index: 6; }
   #dim { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: #000; opacity: 0; pointer-events: none;
          -webkit-transition: opacity 3s; transition: opacity 3s; }
 
@@ -77,7 +79,7 @@
   #unlock .big { font-size: 64px; }
   #unlock .msg { font-size: 34px; font-weight: 300; margin-top: 10px; }
   #unlock .sub { font-size: 20px; color: #8a8f98; margin-top: 10px; }
-  #playing { display: none; position: absolute; left: 0; right: 0; top: 0; padding: 10px; text-align: center;
+  #playing { display: none; position: absolute; left: 0; right: 0; top: 0; padding: 14px; font-size: 22px !important; text-align: center;
              background: #d9b26f; color: #14100a; font-size: 20px; z-index: 5; }
 
   @media (orientation: portrait) {
@@ -124,8 +126,9 @@
   </div>
 </div>
 <div id="dim"></div>
-<div id="playing">Adhan playing — tap anywhere to stop</div>
+<div id="playing"></div>
 <div class="status" id="status"></div>
+<div id="test">▶ Test adhan</div>
 <div id="unlock"><div class="box">
   <div class="big">🔊</div>
   <div class="msg">Tap to turn on the adhan</div>
@@ -158,11 +161,11 @@ var SETTINGS = {
 
   // Adhan per prayer. A list alternates between recordings day to day.
   adhan: {
-    fajr:    "audio/adhan_fajr.mp3",
-    dhuhr:   ["audio/adhan_mashari.mp3", "audio/adhan_naseer.mp3"],
-    asr:     ["audio/adhan_mashari.mp3", "audio/adhan_naseer.mp3"],
-    maghrib: "audio/adhan_maghrib_aldukali.mp3",
-    isha:    ["audio/adhan_mashari.mp3", "audio/adhan_naseer.mp3"]
+    fajr:    "audio/adhan_fajr.m4a",
+    dhuhr:   ["audio/adhan_mashari.m4a", "audio/adhan_naseer.m4a"],
+    asr:     ["audio/adhan_mashari.m4a", "audio/adhan_naseer.m4a"],
+    maghrib: "audio/adhan_maghrib_aldukali.m4a",
+    isha:    ["audio/adhan_mashari.m4a", "audio/adhan_naseer.m4a"]
   }
 };
 // ===================================================================
@@ -347,8 +350,11 @@ var HIJRI_TABLE = [[1447,1,2025,6,26],[1447,2,2025,7,26],[1447,3,2025,8,24],[144
     // Adhan fires only when the clock crosses a prayer time (never on page load).
     for (var i = 0; i < PRAYERS.length; i++) {
       var p = PRAYERS[i];
-      if (p.key !== "sunrise" && p.ts > lastTick && p.ts <= ms && ms - p.ts < 120000) playAdhan(p.key);
+      if (p.key === "sunrise") continue;
+      if (p.ts - 120000 > lastTick && p.ts - 120000 <= ms) preloadAdhan(p.key);
+      if (p.ts > lastTick && p.ts <= ms && ms - p.ts < 120000) playAdhan(p.key, p.name + " adhan playing");
     }
+    if (TOMORROW_FAJR.ts - 120000 > lastTick && TOMORROW_FAJR.ts - 120000 <= ms) preloadAdhan("fajr");
     lastTick = ms;
     renderDim(now);
     renderStatus();
@@ -366,7 +372,12 @@ var HIJRI_TABLE = [[1447,1,2025,6,26],[1447,2,2025,7,26],[1447,3,2025,8,24],[144
   }
 
   // ---------------------------------------------------------------- adhan audio
+  // Old iPads often can't stream audio through Safari's media player, so the adhan is
+  // downloaded like any other page data (XMLHttpRequest) and played through Web Audio.
+  // The <audio> element is only a fallback for browsers without Web Audio.
   var player = $("player"), unlocked = false, playing = false, rotation = 0;
+  var AC = window.AudioContext || window.webkitAudioContext, ctx = null, source = null;
+  var cache = { file: null, buffer: null, loading: null, waiters: [] };
 
   function adhanFile(key) {
     var f = SETTINGS.adhan[key];
@@ -374,47 +385,117 @@ var HIJRI_TABLE = [[1447,1,2025,6,26],[1447,2,2025,7,26],[1447,3,2025,8,24],[144
     return f;
   }
 
-  function playAdhan(key) {
+  // Newer browsers return a promise from play()/decodeAudioData(); iOS 9 doesn't. Ignore either way.
+  function quiet(r) { if (r && r["catch"]) r["catch"](function () {}); }
+  function startNode(n) { if (n.start) n.start(0); else n.noteOn(0); }
+  function stopNode(n) { try { if (n.stop) n.stop(0); else n.noteOff(0); } catch (e) {} }
+
+  // Download + decode one file; keeps only one decoded adhan in memory at a time.
+  function loadBuffer(file, done) {
+    if (cache.file === file && cache.buffer) return done(cache.buffer);
+    cache.waiters.push(done);
+    if (cache.loading === file) return;
+    cache.file = file; cache.buffer = null; cache.loading = file;
+    var x = new XMLHttpRequest();
+    x.open("GET", file, true);
+    x.responseType = "arraybuffer";
+    x.timeout = 60000;
+    function finish(buf) {
+      cache.loading = null;
+      if (buf) cache.buffer = buf; else cache.file = null;
+      var w = cache.waiters; cache.waiters = [];
+      for (var i = 0; i < w.length; i++) w[i](buf);
+    }
+    x.onreadystatechange = function () {
+      if (x.readyState !== 4) return;
+      if (x.status !== 200 || !x.response) { setStatusNote("adhan download failed"); return finish(null); }
+      try {
+        quiet(ctx.decodeAudioData(x.response, function (buf) { finish(buf); },
+                                  function () { setStatusNote("adhan file can't be decoded"); finish(null); }));
+      } catch (e) { setStatusNote("adhan decode error"); finish(null); }
+    };
+    x.ontimeout = function () { setStatusNote("adhan download timed out"); finish(null); };
+    x.send();
+  }
+
+  // Called a couple of minutes early so the file is ready the second the prayer comes in.
+  function preloadAdhan(key) { if (ctx && unlocked) loadBuffer(adhanFile(key), function () {}); }
+
+  function showPlaying(on, label) {
+    playing = on;
+    $("playing").innerHTML = (label || "Adhan playing") + " — tap anywhere to stop";
+    $("playing").style.display = on ? "block" : "none";
+  }
+
+  function playAdhan(key, label) {
     var f = adhanFile(key);
     if (!f || !unlocked) return;
-    try {
-      player.src = f;
-      player.load();
-      quiet(player.play());
-      playing = true;
-      $("playing").style.display = "block";
-      // If iOS refused to play, ask for a tap again.
-      setTimeout(function () { if (playing && player.paused) { stopAdhan(); unlocked = false; $("unlock").style.display = "block"; } }, 4000);
-    } catch (e) { playing = false; }
-  }
-  // Newer browsers return a promise from play(); iOS 9 doesn't. Ignore either way.
-  function quiet(r) { if (r && r["catch"]) r["catch"](function () {}); }
-  function stopAdhan() {
-    try { player.pause(); } catch (e) {}
-    playing = false;
-    $("playing").style.display = "none";
-  }
-  player.addEventListener("ended", stopAdhan);
-  player.addEventListener("error", stopAdhan);
-
-  function onTap(e) {
-    if (!unlocked) {
-      // iOS only allows audio after a tap. Start and immediately pause to unlock the player.
-      try {
-        player.src = adhanFile("fajr");
-        player.load();
-        quiet(player.play());
-        player.pause();
-      } catch (err) {}
-      unlocked = true;
-      $("unlock").style.display = "none";
-      if (e && e.preventDefault) e.preventDefault();
+    stopAdhan();
+    showPlaying(true, label);
+    if (ctx) {
+      if (ctx.resume && ctx.state && ctx.state !== "running") quiet(ctx.resume());
+      var started = new Date().getTime();
+      loadBuffer(f, function (buf) {
+        if (!playing) return;                                   // stopped while loading
+        if (!buf || new Date().getTime() - started > 180000) return showPlaying(false);
+        source = ctx.createBufferSource();
+        source.buffer = buf;
+        source.connect(ctx.destination);
+        source.onended = function () { if (this === source) { source = null; showPlaying(false); } };
+        startNode(source);
+      });
       return;
     }
+    try { player.src = f; player.load(); quiet(player.play()); } catch (e) { showPlaying(false); }
+  }
+
+  function stopAdhan() {
+    if (source) { var s = source; source = null; stopNode(s); }
+    try { player.pause(); } catch (e) {}
+    showPlaying(false);
+  }
+  player.addEventListener("ended", function () { showPlaying(false); });
+  player.addEventListener("error", function () { setStatusNote("adhan file can't play"); showPlaying(false); });
+
+  // iOS only allows sound after a tap. The first tap creates the audio engine and plays
+  // a tiny silent sound, which keeps sound allowed for as long as the page stays open.
+  function unlockAudio() {
+    if (AC) {
+      try {
+        if (!ctx) ctx = new AC();
+        var b = ctx.createBuffer(1, 1, 22050), s = ctx.createBufferSource();
+        s.buffer = b; s.connect(ctx.destination); startNode(s);
+        if (ctx.resume) quiet(ctx.resume());
+      } catch (e) { ctx = null; }
+    }
+    if (!ctx) {
+      try { player.src = adhanFile("fajr"); player.load(); quiet(player.play()); player.pause(); } catch (e) {}
+    }
+    unlocked = true;
+    $("unlock").style.display = "none";
+  }
+
+  function onTap(e) {
+    if (!unlocked) { unlockAudio(); if (e && e.preventDefault) e.preventDefault(); return; }
+    if (ctx && ctx.resume && ctx.state && ctx.state !== "running") quiet(ctx.resume());  // re-arm if iOS paused it
     if (playing) stopAdhan();
   }
   document.addEventListener("touchend", onTap, false);
   document.addEventListener("click", function (e) { if (!("ontouchend" in document)) onTap(e); }, false);
+
+  // Test button: plays the adhan for the next prayer right now.
+  function onTest(e) {
+    if (e.stopPropagation) e.stopPropagation();
+    if (e.preventDefault) e.preventDefault();
+    if (!unlocked) unlockAudio();
+    if (playing) return stopAdhan();
+    playAdhan(nextPrayer(new Date().getTime()).key, "Test adhan playing");
+  }
+  $("test").addEventListener("touchend", onTest, false);
+  $("test").addEventListener("click", function (e) { if (!("ontouchend" in document)) onTest(e); }, false);
+
+  var NOTE = "", NOTE_AT = 0;
+  function setStatusNote(s) { NOTE = s; NOTE_AT = new Date().getTime(); }
 
   // ---------------------------------------------------------------- weather
   var WEATHER_OK = 0, WEATHER_TRY = 0, WEATHER_AGE = 0;
@@ -482,6 +563,7 @@ var HIJRI_TABLE = [[1447,1,2025,6,26],[1447,2,2025,7,26],[1447,3,2025,8,24],[144
   function renderStatus() {
     var el = $("status"), age = new Date().getTime() - WEATHER_OK;
     var sound = unlocked ? "🔊 Adhan on" : "🔇 Adhan off — tap screen";
+    if (NOTE && new Date().getTime() - NOTE_AT < 600000) sound += " · " + esc(NOTE);
     if (WEATHER_OK && (age > 90 * 60000 || WEATHER_AGE > 3 * 3600000)) { el.className = "status bad"; el.innerHTML = sound + " · weather not updating"; }
     else if (!WEATHER_OK && new Date().getTime() - WEATHER_TRY > 60000) { el.className = "status bad"; el.innerHTML = sound + " · weather unavailable"; }
     else { el.className = unlocked ? "status" : "status bad"; el.innerHTML = sound; }
